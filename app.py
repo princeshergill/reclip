@@ -4,8 +4,11 @@ import glob
 import json
 import subprocess
 import threading
+import ipaddress
+import socket
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_file, render_template, Response
 
 app = Flask(__name__)
@@ -18,6 +21,43 @@ jobs = {}
 # a link before downloading it. Only URLs that yt-dlp itself extracted are ever fetched.
 streams = {}
 STREAMABLE_PROTOCOLS = {"http", "https"}  # plain files; HLS/DASH fragments can't be proxied simply
+
+
+def is_public_http_url(url):
+    """True only for http(s) URLs whose host resolves to public addresses.
+
+    The preview proxy fetches URLs that yt-dlp extracted from a page the user submitted, and a
+    hostile page can make yt-dlp return any URL. Refuse loopback, private, link-local and other
+    internal addresses so ReClip can't be used to reach services on this machine or network.
+    Set RECLIP_ALLOW_PRIVATE_STREAMS=1 to allow them (for example to preview from a LAN server).
+    """
+    if os.environ.get("RECLIP_ALLOW_PRIVATE_STREAMS") == "1":
+        return True
+    try:
+        p = urlparse(url)
+        if p.scheme not in ("http", "https") or not p.hostname:
+            return False
+        port = p.port or (443 if p.scheme == "https" else 80)
+        for family, _type, _proto, _canon, sockaddr in socket.getaddrinfo(p.hostname, port, proto=socket.IPPROTO_TCP):
+            ip = ipaddress.ip_address(sockaddr[0].split("%")[0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified):
+                return False
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to public addresses."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not is_public_http_url(newurl):
+            raise urllib.error.HTTPError(newurl, 403, "Blocked address", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_CheckedRedirects)
 
 
 def register_stream(url, info):
@@ -36,6 +76,8 @@ def register_stream(url, info):
     if best is None and info.get("url") and info.get("protocol") in STREAMABLE_PROTOCOLS:
         best = (None, info)  # single-file result (e.g. a direct media link)
     def remember(f):
+        if not is_public_http_url(f["url"]):
+            return None
         sid = uuid.uuid4().hex[:12]
         streams[sid] = {
             "url": f["url"],
@@ -80,6 +122,8 @@ def register_stream(url, info):
             mux = (pic, sounds[0])
 
     def remember_mux(pic, snd):
+        if not (is_public_http_url(pic["url"]) and is_public_http_url(snd["url"])):
+            return None
         sid = uuid.uuid4().hex[:12]
         streams[sid] = {
             "mux": True,
@@ -90,7 +134,7 @@ def register_stream(url, info):
         return sid
 
     video_id = remember(video) if video else (remember_mux(*mux) if mux else None)
-    return (remember(best[1]) if best else None, video_id, bool(mux and not video))
+    return (remember(best[1]) if best else None, video_id, bool(mux and not video and video_id))
 
 
 def parse_ytdlp_json(stdout):
@@ -295,6 +339,9 @@ def mux_preview(s):
     start = request.args.get("start", default=0.0, type=float) or 0.0
     start = max(0.0, min(start, 6 * 3600.0))
 
+    if not (is_public_http_url(s["video"]["url"]) and is_public_http_url(s["audio"]["url"])):
+        return jsonify({"error": "Blocked address"}), 403
+
     def hdrs(h):
         return "".join(f"{k}: {v}\r\n" for k, v in h.items())
 
@@ -304,7 +351,8 @@ def mux_preview(s):
             cmd += ["-ss", f"{start:.2f}"]
         if part["headers"]:
             cmd += ["-headers", hdrs(part["headers"])]
-        cmd += ["-i", part["url"]]
+        # network only: never let ffmpeg open local files or other protocols from a hostile playlist
+        cmd += ["-protocol_whitelist", "http,https,tcp,tls,crypto", "-i", part["url"]]
     cmd += ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
     try:
@@ -335,11 +383,13 @@ def stream_preview(stream_id):
         return jsonify({"error": "Preview not available"}), 404
     if s.get("mux"):
         return mux_preview(s)
+    if not is_public_http_url(s["url"]):
+        return jsonify({"error": "Blocked address"}), 403
     headers = dict(s["headers"])
     if request.headers.get("Range"):
         headers["Range"] = request.headers["Range"]
     try:
-        upstream = urllib.request.urlopen(urllib.request.Request(s["url"], headers=headers), timeout=20)
+        upstream = _opener.open(urllib.request.Request(s["url"], headers=headers), timeout=20)
     except urllib.error.HTTPError as e:
         upstream = e  # e.g. 206/416/403: pass the status through
     except Exception:
