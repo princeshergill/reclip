@@ -4,13 +4,93 @@ import glob
 import json
 import subprocess
 import threading
-from flask import Flask, request, jsonify, send_file, render_template
+import urllib.error
+import urllib.request
+from flask import Flask, request, jsonify, send_file, render_template, Response
 
 app = Flask(__name__)
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 jobs = {}
+
+# Direct audio URLs found by yt-dlp, keyed by a short id, so the page can preview
+# a link before downloading it. Only URLs that yt-dlp itself extracted are ever fetched.
+streams = {}
+STREAMABLE_PROTOCOLS = {"http", "https"}  # plain files; HLS/DASH fragments can't be proxied simply
+
+
+def register_stream(url, info):
+    """Remember a directly-playable audio stream, and a combined video+audio one when the
+    source offers it. Returns (audio_stream_id, video_stream_id); either may be None."""
+    best = None
+    for f in info.get("formats", []):
+        if not f.get("url") or f.get("acodec") in (None, "none"):
+            continue
+        if f.get("protocol") not in STREAMABLE_PROTOCOLS:
+            continue
+        audio_only = f.get("vcodec") in (None, "none")
+        score = (audio_only, f.get("abr") or 0, f.get("tbr") or 0)
+        if best is None or score > best[0]:
+            best = (score, f)
+    if best is None and info.get("url") and info.get("protocol") in STREAMABLE_PROTOCOLS:
+        best = (None, info)  # single-file result (e.g. a direct media link)
+    def remember(f):
+        sid = uuid.uuid4().hex[:12]
+        streams[sid] = {
+            "url": f["url"],
+            "headers": f.get("http_headers") or info.get("http_headers") or {},
+            "source": url,
+        }
+        return sid
+
+    # A single file with both picture and sound, in a format browsers play (mp4/webm), up to 720p.
+    video = None
+    for f in info.get("formats", []):
+        if not f.get("url") or f.get("protocol") not in STREAMABLE_PROTOCOLS:
+            continue
+        if f.get("vcodec") in (None, "none") or f.get("acodec") in (None, "none"):
+            continue
+        if f.get("ext") not in ("mp4", "webm"):
+            continue
+        h = f.get("height") or 0
+        if h > 720:
+            continue
+        if video is None or h > (video.get("height") or 0):
+            video = f
+
+    # No combined file (YouTube usually serves picture and sound separately): pair the best
+    # picture-only stream with a matching sound-only stream. The server joins them on the fly
+    # with ffmpeg (no re-encoding) when the preview is played.
+    mux = None
+    if video is None:
+        def usable(f):
+            return f.get("url") and f.get("protocol") in STREAMABLE_PROTOCOLS
+        pics = [f for f in info.get("formats", [])
+                if usable(f) and f.get("vcodec") not in (None, "none") and f.get("acodec") in (None, "none")
+                and f.get("ext") in ("mp4", "webm") and 0 < (f.get("height") or 0) <= 720]
+        sounds = [f for f in info.get("formats", [])
+                  if usable(f) and f.get("vcodec") in (None, "none") and f.get("acodec") not in (None, "none")]
+        # Prefer H.264 + AAC (plays everywhere), then whatever pairs up.
+        pics.sort(key=lambda f: ((f.get("vcodec") or "").startswith("avc1"), f.get("height") or 0), reverse=True)
+        if pics and sounds:
+            pic = pics[0]
+            want_aac = (pic.get("vcodec") or "").startswith("avc1")
+            sounds.sort(key=lambda f: ((f.get("acodec") or "").startswith("mp4a") == want_aac, f.get("abr") or 0), reverse=True)
+            mux = (pic, sounds[0])
+
+    def remember_mux(pic, snd):
+        sid = uuid.uuid4().hex[:12]
+        streams[sid] = {
+            "mux": True,
+            "video": {"url": pic["url"], "headers": pic.get("http_headers") or info.get("http_headers") or {}},
+            "audio": {"url": snd["url"], "headers": snd.get("http_headers") or info.get("http_headers") or {}},
+            "source": url,
+        }
+        return sid
+
+    video_id = remember(video) if video else (remember_mux(*mux) if mux else None)
+    return (remember(best[1]) if best else None, video_id, bool(mux and not video))
 
 
 def parse_ytdlp_json(stdout):
@@ -127,12 +207,17 @@ def get_info():
             })
         formats.sort(key=lambda x: x["height"], reverse=True)
 
+        stream_id, video_stream_id, video_mux = register_stream(url, info)
+
         return jsonify({
             "title": info.get("title", ""),
             "thumbnail": info.get("thumbnail", ""),
             "duration": info.get("duration"),
             "uploader": info.get("uploader", ""),
             "formats": formats,
+            "stream_id": stream_id,
+            "video_stream_id": video_stream_id,
+            "video_mux": video_mux,
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Timed out fetching video info"}), 400
@@ -202,6 +287,90 @@ def download_file(job_id):
     if not job or job["status"] != "done":
         return jsonify({"error": "File not ready"}), 404
     return send_file(job["file"], as_attachment=True, download_name=job["filename"])
+
+
+def mux_preview(s):
+    """Join a picture-only and a sound-only stream into one fragmented MP4 and stream it.
+    No re-encoding. ?start=SECONDS restarts the stream from that point (used for seeking)."""
+    start = request.args.get("start", default=0.0, type=float) or 0.0
+    start = max(0.0, min(start, 6 * 3600.0))
+
+    def hdrs(h):
+        return "".join(f"{k}: {v}\r\n" for k, v in h.items())
+
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    for part in (s["video"], s["audio"]):
+        if start > 0:
+            cmd += ["-ss", f"{start:.2f}"]
+        if part["headers"]:
+            cmd += ["-headers", hdrs(part["headers"])]
+        cmd += ["-i", part["url"]]
+    cmd += ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except OSError:
+        return jsonify({"error": "ffmpeg is not available"}), 502
+
+    def generate():
+        try:
+            while True:
+                chunk = proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:  # the browser went away or the stream ended: stop ffmpeg
+            proc.kill()
+            proc.wait()
+
+    return Response(generate(), mimetype="video/mp4", headers={"Cache-Control": "no-store", "Accept-Ranges": "none"})
+
+
+@app.route("/api/stream/<stream_id>")
+def stream_preview(stream_id):
+    """Proxy the audio of a not-yet-downloaded link so the player can preview it.
+    Forwards Range requests so seeking works."""
+    s = streams.get(stream_id)
+    if not s:
+        return jsonify({"error": "Preview not available"}), 404
+    if s.get("mux"):
+        return mux_preview(s)
+    headers = dict(s["headers"])
+    if request.headers.get("Range"):
+        headers["Range"] = request.headers["Range"]
+    try:
+        upstream = urllib.request.urlopen(urllib.request.Request(s["url"], headers=headers), timeout=20)
+    except urllib.error.HTTPError as e:
+        upstream = e  # e.g. 206/416/403: pass the status through
+    except Exception:
+        return jsonify({"error": "Could not reach the source"}), 502
+
+    def generate():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    resp = Response(generate(), status=upstream.status if hasattr(upstream, "status") else upstream.code)
+    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+        if upstream.headers.get(h):
+            resp.headers[h] = upstream.headers[h]
+    resp.headers.setdefault("Accept-Ranges", "bytes")
+    return resp
+
+
+@app.route("/api/play/<job_id>")
+def play_file(job_id):
+    """Stream a finished download inline (no attachment header) so the browser
+    player can play and seek it. Only files from completed jobs are served."""
+    job = jobs.get(job_id)
+    if not job or job["status"] != "done":
+        return jsonify({"error": "File not ready"}), 404
+    return send_file(job["file"], conditional=True)
 
 
 if __name__ == "__main__":

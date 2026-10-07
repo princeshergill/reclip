@@ -354,6 +354,97 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    .show-more-btn {
+      width: 100%;
+      padding: 12px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--fg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .show-more-btn span { color: var(--muted); margin-left: 8px; }
+    .show-more-btn:hover:not(:disabled) { border-color: var(--accent); }
+    .show-more-btn:disabled { opacity: 0.6; cursor: wait; }
+
+    .card-play-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      border: 1.5px solid var(--accent);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--accent);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .card-play-btn svg { width: 11px; height: 11px; fill: currentColor; }
+    .card-play-btn:hover, .card-play-btn.on { background: var(--accent); color: #fff; }
+    .card.playing { border-color: var(--accent); }
+    /* While a video plays, the card's thumbnail becomes the player at about 3x its size. */
+    .card.has-video { flex-direction: column; gap: 12px; }
+    .card-thumb { transition: width 0.25s ease, height 0.25s ease; }
+    .card-thumb.video {
+      width: 360px; min-width: 0; max-width: 100%;
+      height: auto; aspect-ratio: 16 / 9;
+      background: #000; cursor: pointer;
+    }
+    .card-thumb.video video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+    .player-btn[hidden] { display: none; }
+    .video-fs-btn {
+      position: absolute; right: 8px; bottom: 8px;
+      width: 34px; height: 34px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: none; border-radius: 8px;
+      background: rgba(0, 0, 0, 0.55); color: #fff;
+      cursor: pointer; opacity: 0.9; transition: opacity 0.2s, background 0.2s;
+    }
+    .video-fs-btn:hover { opacity: 1; background: rgba(0, 0, 0, 0.8); }
+    .video-fs-btn svg { width: 16px; height: 16px; fill: currentColor; }
+    .card-thumb.video:fullscreen { width: 100%; height: 100%; max-width: none; aspect-ratio: auto; border-radius: 0; background: #000; }
+    .card-thumb.video:fullscreen .video-fs-btn { right: 18px; bottom: 18px; }
+
+    body.has-player .page { padding-bottom: 150px; }
+    .player {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 20;
+      background: var(--card);
+      border-top: 1px solid var(--card-border);
+      box-shadow: 0 -6px 24px rgba(58, 58, 56, 0.08);
+      padding: 10px 16px 12px;
+    }
+    .player[hidden] { display: none; }
+    .player-inner { max-width: 620px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+    .player-top { display: flex; align-items: center; gap: 10px; }
+    .player-title { flex: 1; min-width: 0; font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .player-btn {
+      width: 34px; height: 34px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: none; border-radius: 50%;
+      background: transparent; color: var(--fg);
+      cursor: pointer; transition: background 0.2s;
+    }
+    .player-btn:hover { background: var(--bg); }
+    .player-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .player-btn.main { background: var(--accent); color: #fff; }
+    .player-btn.main:hover { background: var(--accent-hover); }
+    .player-btn svg { width: 14px; height: 14px; fill: currentColor; }
+    .player-seek { display: flex; align-items: center; gap: 8px; font-size: 0.65rem; color: var(--muted); }
+    .player-seek input[type=range] { flex: 1; accent-color: var(--accent); }
+    .player-vol { width: 70px; accent-color: var(--accent); }
+    .player-time { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+
     .footer {
       margin-top: 48px;
       text-align: center;
@@ -374,6 +465,7 @@
         min-width: unset;
         height: 160px;
       }
+      .card-thumb.video { width: 100%; height: auto; }
       .card-title { white-space: normal; }
       .controls { flex-wrap: wrap; }
       .fetch-btn { width: 100%; }
@@ -399,6 +491,7 @@
     </div>
 
     <div id="cards" class="cards"></div>
+    <div id="bars"></div>
 
     <div class="footer">
       YouTube &middot; TikTok &middot; Instagram &middot; Twitter/X &middot; Reddit &middot; Facebook<br>
@@ -407,9 +500,167 @@
     </div>
   </div>
 
+  <div id="player" class="player" hidden>
+    <div class="player-inner">
+      <div class="player-top">
+        <button class="player-btn main" id="pToggle" onclick="togglePlay()" aria-label="Play or pause"></button>
+        <div class="player-title" id="pTitle"></div>
+        <input class="player-vol" id="pVol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+        <button class="player-btn" id="pFull" hidden onclick="toggleFullscreen()" aria-label="Full screen"><svg viewBox="0 0 24 24"><path d="M5 5h5v2H7v3H5zM14 5h5v5h-2V7h-3zM5 14h2v3h3v2H5zM17 14h2v5h-5v-2h3z"/></svg></button>
+        <button class="player-btn" onclick="closePlayer()" aria-label="Close player"><svg viewBox="0 0 24 24"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg></button>
+      </div>
+      <div class="player-seek">
+        <span class="player-time" id="pCur">0:00</span>
+        <input id="pSeek" type="range" min="0" max="0" step="1" value="0" aria-label="Seek">
+        <span class="player-time" id="pDur">0:00</span>
+      </div>
+    </div>
+  </div>
+  <div id="mediaHome" hidden><video id="audio" playsinline preload="metadata"></video></div>
+
   <script>
     let currentFormat = 'video';
     let cardData = [];
+
+    // ---- Player -----------------------------------------------------------
+    const audio = document.getElementById('audio');
+    const ICON_PLAY = '<svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg>';
+    const ICON_PAUSE = '<svg viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+    // mux: playing a picture+sound stream joined on the fly by the server. Those streams have no
+    // fixed length or byte ranges, so we show the known duration and seek by restarting at an offset.
+    const player = { current: null, hasVideo: false, title: '', mux: false, offset: 0, base: '' };
+    const $ = id => document.getElementById(id);
+
+    // What the player can play for a card: the finished file if there is one,
+    // otherwise a live preview stream of the link (when the source allows it).
+    function srcOf(c) {
+      if (!c) return null;
+      if (c.status === 'done' && c.jobId) return `/api/play/${c.jobId}`;
+      if (['ready', 'downloading', 'error'].includes(c.status)) {
+        // In MP4 mode prefer a combined picture+sound preview when the source offers one.
+        if (currentFormat === 'video' && c.videoStreamId) return `/api/stream/${c.videoStreamId}`;
+        if (c.streamId) return `/api/stream/${c.streamId}`;
+      }
+      return null;
+    }
+
+    // Playable cards, in the order they appear on the page.
+    const queue = () => cardData.map((c, i) => (srcOf(c) ? i : -1)).filter(i => i >= 0);
+
+    function playBtnHtml(idx) {
+      if (!srcOf(cardData[idx])) return '';
+      const on = player.current === idx && !audio.paused;
+      const title = esc(cardData[idx].title || 'this link');
+      return `<button class="card-play-btn${on ? ' on' : ''}" onclick="playCard(${idx})" aria-label="${on ? 'Pause' : 'Play'} ${title}">${on ? ICON_PAUSE : ICON_PLAY} ${on ? 'Pause' : 'Play'}</button>`;
+    }
+
+    function refreshCards() {
+      cardData.forEach((c, i) => { if (['ready', 'downloading', 'done', 'error'].includes(c.status)) renderCard(i); });
+      $('pToggle').innerHTML = audio.paused ? ICON_PLAY : ICON_PAUSE;
+      $('pFull').hidden = !player.hasVideo;
+    }
+
+    // Full screen the whole video frame (not just the <video>) so its button stays on screen to exit.
+    function toggleFullscreen() {
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      const frame = audio.closest('.card-thumb') || audio;
+      if (frame.requestFullscreen) frame.requestFullscreen().catch(() => {});
+    }
+
+    function playCard(idx) {
+      const c = cardData[idx];
+      const src = srcOf(c);
+      if (!src) return;
+      if (player.current === idx) { togglePlay(); return; }
+      player.current = idx;
+      player.title = c.title || c.filename || 'Untitled';
+      player.hasVideo = false; // set again once we know the file has a picture
+      player.base = src;
+      player.offset = 0;
+      player.mux = Boolean(c.videoMux && c.videoStreamId && src === `/api/stream/${c.videoStreamId}`);
+      audio.poster = c.thumbnail || '';
+      audio.src = src;
+      audio.play().catch(() => {});
+      $('pTitle').textContent = player.title + (src.startsWith('/api/stream') ? ' (loading preview…)' : '');
+      $('player').hidden = false;
+      document.body.classList.add('has-player');
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: c.title || '', artist: c.uploader || '', artwork: c.thumbnail ? [{ src: c.thumbnail }] : [] });
+        navigator.mediaSession.setActionHandler('previoustrack', playPrev);
+        navigator.mediaSession.setActionHandler('nexttrack', playNext);
+      }
+      refreshCards();
+    }
+
+    function togglePlay() {
+      if (player.current === null) return;
+      if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    }
+
+    function step(delta) {
+      const q = queue();
+      const next = q[q.indexOf(player.current) + delta];
+      if (next !== undefined) playCard(next);
+    }
+    const playNext = () => step(1);
+    const playPrev = () => {
+      // Like most players: a restart if we're a few seconds in, otherwise the previous track.
+      if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+      step(-1);
+    };
+
+    function closePlayer() {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+      const was = player.current;
+      player.current = null;
+      player.hasVideo = false;
+      if (document.fullscreenElement) document.exitFullscreen();
+      $('mediaHome').appendChild(audio); // give the thumbnail back
+      $('player').hidden = true;
+      document.body.classList.remove('has-player');
+      if (was !== null && cardData[was]) renderCard(was);
+      refreshCards();
+    }
+
+    audio.addEventListener('play', refreshCards);
+    audio.addEventListener('pause', refreshCards);
+    audio.addEventListener('ended', () => { const q = queue(); if (q.indexOf(player.current) < q.length - 1) playNext(); else refreshCards(); });
+    audio.addEventListener('loadedmetadata', () => {
+      const total = player.mux ? (cardData[player.current]?.duration || 0) : audio.duration;
+      $('pSeek').max = Math.floor(total) || 0;
+      $('pDur').textContent = fmtDur(total) || '0:00';
+      const video = audio.videoWidth > 0;
+      if (video !== player.hasVideo) { player.hasVideo = video; refreshCards(); }
+    });
+    audio.addEventListener('click', togglePlay);
+    audio.addEventListener('timeupdate', () => {
+      const t = player.offset + audio.currentTime;
+      if (!seeking) $('pSeek').value = Math.floor(t);
+      $('pCur').textContent = fmtDur(t) || '0:00';
+    });
+    audio.addEventListener('playing', () => { if (player.current !== null) $('pTitle').textContent = player.title; });
+    audio.addEventListener('error', () => {
+      if (player.current === null) return;
+      const streaming = (audio.currentSrc || '').includes('/api/stream/');
+      $('pTitle').textContent = streaming ? "Can't preview this one. Download it, then press Play." : 'Could not play this file';
+    });
+    let seeking = false;
+    $('pSeek').addEventListener('input', e => { seeking = true; $('pCur').textContent = fmtDur(+e.target.value) || '0:00'; });
+    $('pSeek').addEventListener('change', e => {
+      const target = +e.target.value;
+      seeking = false;
+      if (player.mux) {
+        // The joined stream can't be scrubbed in place: restart it from the chosen point.
+        player.offset = target;
+        audio.src = `${player.base}?start=${target}`;
+        audio.play().catch(() => {});
+      } else {
+        audio.currentTime = target;
+      }
+    });
+    $('pVol').addEventListener('input', e => { audio.volume = +e.target.value; });
 
     function setFormat(btn) {
       document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
@@ -451,72 +702,159 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
     });
 
+    let loading = false;
+    let stopRequested = false;
+    let pendingUrls = [];       // links found but not loaded yet
+    const BATCH = 3;            // how many results to load (and show) at a time
+    const MAX_PLAYLIST = 100;   // safety cap on how many playlist items we will list at all
+
+    // A YouTube "Mix" (list=RD...) is an endless auto-generated playlist. When the link
+    // points at one video, treat it as just that video.
+    function normalizeUrl(u) {
+      try {
+        const x = new URL(u);
+        const list = x.searchParams.get('list') || '';
+        if (x.hostname.endsWith('youtube.com') && list.startsWith('RD') && x.searchParams.get('v')) {
+          ['list', 'start_radio', 'index', 'pp'].forEach(k => x.searchParams.delete(k));
+          return x.toString();
+        }
+      } catch { /* not a parseable URL; leave it alone */ }
+      return u;
+    }
+
+    function setListNote(text) {
+      let note = document.getElementById('list-note');
+      if (!text) { if (note) note.remove(); return; }
+      if (!note) {
+        note = document.createElement('p');
+        note.id = 'list-note';
+        note.className = 'hint';
+        note.style.margin = '6px 0 14px';
+        document.getElementById('cards').before(note);
+      }
+      note.textContent = text;
+    }
+
+    function renderShowMore() {
+      const old = document.getElementById('show-more-bar');
+      if (old) old.remove();
+      if (!pendingUrls.length) return;
+      const n = Math.min(BATCH, pendingUrls.length);
+      const bar = document.createElement('div');
+      bar.id = 'show-more-bar';
+      bar.className = 'dl-all-bar';
+      bar.innerHTML = `<button class="show-more-btn" onclick="showMore()">Show ${n} more <span>${pendingUrls.length} left</span></button>`;
+      const bars = document.getElementById('bars');
+      bars.insertBefore(bar, bars.firstChild);
+    }
+
+    async function fetchInfo(idx) {
+      const url = cardData[idx].url;
+      try {
+        const res = await fetch('/api/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          cardData[idx] = { ...cardData[idx], status: 'info-error', error: data.error };
+        } else {
+          cardData[idx] = {
+            ...cardData[idx],
+            status: 'ready',
+            title: data.title || '',
+            thumbnail: data.thumbnail || '',
+            duration: data.duration,
+            uploader: data.uploader || '',
+            formats: data.formats || [],
+            selectedFormatId: data.formats?.[0]?.id || null,
+            streamId: data.stream_id || null,
+            videoStreamId: data.video_stream_id || null,
+            videoMux: Boolean(data.video_mux),
+          };
+        }
+      } catch (err) {
+        cardData[idx] = { ...cardData[idx], status: 'info-error', error: err.message };
+      }
+    }
+
+    // Loads the next few links. Stop halts after the current one; whatever is left stays available.
+    async function loadBatch() {
+      const btn = document.getElementById('goBtn');
+      const batch = pendingUrls.splice(0, BATCH);
+      for (let i = 0; i < batch.length; i++) {
+        if (stopRequested) { pendingUrls.unshift(...batch.slice(i)); break; }
+        btn.textContent = batch.length > 1 ? `Stop (${i + 1}/${batch.length})` : 'Stop';
+        const idx = cardData.length;
+        cardData.push({ url: batch[i], status: 'loading' });
+        renderCard(idx);
+        await fetchInfo(idx);
+        renderCard(idx);
+      }
+      if (cardData.filter(c => c.status === 'ready').length > 1) renderDownloadAll();
+      renderShowMore();
+    }
+
     async function go() {
-      const urls = parseUrls(document.getElementById('urls').value);
+      // While loading, the button works as "Stop".
+      if (loading) { stopRequested = true; return; }
+
+      const urls = [...new Set(parseUrls(document.getElementById('urls').value).map(normalizeUrl))];
       if (!urls.length) return;
 
       const btn = document.getElementById('goBtn');
-      const container = document.getElementById('cards');
-      btn.disabled = true;
-      btn.textContent = 'Loading...';
-      container.innerHTML = '';
+      loading = true;
+      stopRequested = false;
+      btn.textContent = 'Stop';
+      closePlayer(); // the queue is about to be replaced
+      document.getElementById('cards').innerHTML = '';
+      document.getElementById('bars').innerHTML = '';
       cardData = [];
+      pendingUrls = [];
+      setListNote('');
+      let note = '';
 
-      // Check if youtube playlist URL
-      for (let i = 0; i < urls.length; i++) {
-        if (urls[i].includes('list=')) {
-          const res = await fetch('/api/playlist', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: urls[i] }),
-          });
-          const data = await res.json();
-          if (data.urls) {
-            // replace playlist URL with individual video URLs
-            urls.splice(i, 1, ...data.urls);
+      try {
+        // Expand playlist links into their videos (just the list; each video loads only when shown).
+        for (let i = 0; i < urls.length; i++) {
+          if (urls[i].includes('list=')) {
+            const res = await fetch('/api/playlist', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: urls[i] }),
+            });
+            const data = await res.json();
+            if (data.urls) {
+              if (data.urls.length > MAX_PLAYLIST) note = `That playlist has ${data.urls.length} videos; listing the first ${MAX_PLAYLIST}.`;
+              urls.splice(i, 1, ...data.urls.slice(0, MAX_PLAYLIST));
+            }
           }
         }
+        pendingUrls = urls;
+        await loadBatch();
+        setListNote(note);
+      } finally {
+        loading = false;
+        btn.disabled = false;
+        btn.textContent = 'Fetch';
       }
+    }
 
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
-        const idx = cardData.length;
-        cardData.push({ url, status: 'loading' });
-        renderCard(idx);
-
-        try {
-          const res = await fetch('/api/info', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
-          });
-          const data = await res.json();
-          if (data.error) {
-            cardData[idx] = { ...cardData[idx], status: 'info-error', error: data.error };
-          } else {
-            cardData[idx] = {
-              ...cardData[idx],
-              status: 'ready',
-              title: data.title || '',
-              thumbnail: data.thumbnail || '',
-              duration: data.duration,
-              uploader: data.uploader || '',
-              formats: data.formats || [],
-              selectedFormatId: data.formats?.[0]?.id || null,
-            };
-          }
-        } catch (err) {
-          cardData[idx] = { ...cardData[idx], status: 'info-error', error: err.message };
-        }
-        renderCard(idx);
+    async function showMore() {
+      if (loading || !pendingUrls.length) return;
+      const btn = document.getElementById('goBtn');
+      loading = true;
+      stopRequested = false;
+      btn.textContent = 'Stop';
+      const more = document.querySelector('#show-more-bar button');
+      if (more) { more.disabled = true; more.textContent = 'Loading...'; }
+      try {
+        await loadBatch();
+      } finally {
+        loading = false;
+        btn.textContent = 'Fetch';
       }
-
-      if (cardData.filter(c => c.status === 'ready').length > 1) {
-        renderDownloadAll();
-      }
-
-      btn.disabled = false;
-      btn.textContent = 'Fetch';
     }
 
     function renderCard(idx) {
@@ -528,6 +866,9 @@
         el.className = 'card';
         document.getElementById('cards').appendChild(el);
       }
+
+      // The shared <video> element may be sitting in this card's thumbnail; park it before we rebuild the card.
+      if (el.contains(audio)) $('mediaHome').appendChild(audio);
 
       // Loading skeleton
       if (c.status === 'loading') {
@@ -561,7 +902,7 @@
       }
 
       // Ready / downloading / done / error states
-      el.className = 'card';
+      el.className = player.current === idx ? 'card playing' : 'card';
       const isAudio = currentFormat === 'audio';
 
       let thumbHtml;
@@ -582,14 +923,15 @@
 
       let actionHtml = '';
       if (c.status === 'ready') {
-        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Download</button>${qualityChips}`;
+        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Download</button>${playBtnHtml(idx)}${qualityChips}`;
       } else if (c.status === 'downloading') {
-        actionHtml = `<span class="card-status downloading"><span class="spin"></span> Downloading...</span>`;
+        actionHtml = `<span class="card-status downloading"><span class="spin"></span> Downloading...</span>${playBtnHtml(idx)}`;
       } else if (c.status === 'done') {
         actionHtml = `<button class="card-dl-btn done" onclick="saveCard(${idx})">Save</button>
+          ${playBtnHtml(idx)}
           <span class="card-status done">${esc(c.filename || '')}</span>`;
       } else if (c.status === 'error') {
-        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Retry</button>
+        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Retry</button>${playBtnHtml(idx)}
           <span class="card-status error">${esc(friendlyError(c.error || 'Download failed'))}</span>`;
       }
 
@@ -601,6 +943,23 @@
           <div class="card-actions">${actionHtml}</div>
         </div>
       `;
+
+      // While this card plays a video, its thumbnail becomes the player (about 3x larger).
+      const showVideo = player.current === idx && player.hasVideo;
+      el.classList.toggle('has-video', showVideo);
+      if (showVideo) {
+        const slot = el.querySelector('.card-thumb');
+        slot.classList.add('video');
+        slot.replaceChildren(audio);
+        const fs = document.createElement('button');
+        fs.className = 'video-fs-btn';
+        fs.type = 'button';
+        fs.setAttribute('aria-label', 'Full screen');
+        fs.title = 'Full screen';
+        fs.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 5h5v2H7v3H5zM14 5h5v5h-2V7h-3zM5 14h2v3h3v2H5zM17 14h2v5h-5v-2h3z"/></svg>';
+        fs.addEventListener('click', toggleFullscreen);
+        slot.appendChild(fs);
+      }
     }
 
     function renderDownloadAll() {
@@ -611,7 +970,7 @@
       bar.id = 'dl-all-bar';
       bar.className = 'dl-all-bar';
       bar.innerHTML = `<button class="dl-all-btn" onclick="dlAll()">Download All</button>`;
-      document.getElementById('cards').appendChild(bar);
+      document.getElementById('bars').appendChild(bar);
     }
 
     function pickFormat(idx, formatId) {
