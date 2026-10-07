@@ -28,8 +28,6 @@ cd reclip
 ./reclip.sh
 ```
 
-Open **http://localhost:8899**.
-
 Or with Docker:
 
 ```bash
